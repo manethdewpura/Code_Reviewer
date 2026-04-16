@@ -53,18 +53,21 @@ def resolve_out_path(out_arg: str) -> Path:
     return (Path("reports") / p.name).resolve()
 
 
+def run_review(*, project_root: str, model: str) -> ReviewStateDict:
+    """Execute the full multi-agent review graph and return final state."""
+    initial: ReviewStateDict = {
+        "project_root": str(Path(project_root).expanduser().resolve()),
+        "model": model,
+    }
+    app = build_graph().compile()
+    return app.invoke(initial)
+
+
 def main() -> None:
     args = parse_args()
     project_root = str(Path(args.project).expanduser().resolve())
     out_path = resolve_out_path(args.out)
-
-    initial: ReviewStateDict = {
-        "project_root": project_root,
-        "model": args.model,
-    }
-
-    app = build_graph().compile()
-    final_state = app.invoke(initial)
+    final_state = run_review(project_root=project_root, model=args.model)
 
     report = final_state.get("final_report", {})
     out_path.parent.mkdir(parents=True, exist_ok=True)
