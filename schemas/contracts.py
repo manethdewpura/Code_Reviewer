@@ -94,3 +94,45 @@ def safe_validate(model_cls: type[TModel], payload: Any) -> TModel | None:
         return model_cls.model_validate(payload)
     except ValidationError:
         return None
+
+
+def normalize_quality_response(payload: Any) -> dict[str, Any]:
+    """Normalize common LLM response variants into {'issues': [...]}."""
+    if isinstance(payload, list):
+        return {"issues": payload}
+    if isinstance(payload, dict):
+        if isinstance(payload.get("issues"), list):
+            return payload
+        if isinstance(payload.get("issue"), list):
+            return {"issues": payload.get("issue")}
+        if all(k in payload for k in ("title", "severity", "details", "recommendation")):
+            return {"issues": [payload]}
+    return {"issues": []}
+
+
+def normalize_security_response(payload: Any) -> dict[str, Any]:
+    """Normalize common LLM response variants into {'risks': [...]}."""
+    if isinstance(payload, list):
+        return {"risks": payload}
+    if isinstance(payload, dict):
+        if isinstance(payload.get("risks"), list):
+            return payload
+        if isinstance(payload.get("risk"), list):
+            return {"risks": payload.get("risk")}
+        if all(k in payload for k in ("title", "severity", "mitigation")):
+            return {"risks": [payload]}
+    return {"risks": []}
+
+
+def normalize_refactor_response(payload: Any) -> dict[str, Any]:
+    """Normalize common LLM response variants into {'plan': [...]}."""
+    if isinstance(payload, list):
+        return {"plan": payload}
+    if isinstance(payload, dict):
+        if isinstance(payload.get("plan"), list):
+            return payload
+        if isinstance(payload.get("plans"), list):
+            return {"plan": payload.get("plans")}
+        if all(k in payload for k in ("file", "steps", "risk")):
+            return {"plan": [payload]}
+    return {"plan": []}

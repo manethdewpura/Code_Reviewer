@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from agents.state_types import FindingDict, ReviewStateDict
 from observability.tracer import JsonlTracer
-from schemas.contracts import SecurityHitModel, SecurityResponseModel, safe_validate
+from schemas.contracts import (
+    SecurityHitModel,
+    SecurityResponseModel,
+    normalize_security_response,
+    safe_validate,
+)
 from tools.ollama_client import ollama_chat_json
 from tools.security_scanner import scan_security_risks
 
@@ -86,7 +91,8 @@ def security_agent(state: ReviewStateDict) -> ReviewStateDict:
                 schema_hint=schema_hint,
                 temperature=0.2,
             )
-            valid_resp = safe_validate(SecurityResponseModel, resp)
+            normalized_resp = normalize_security_response(resp)
+            valid_resp = safe_validate(SecurityResponseModel, normalized_resp)
             if not valid_resp:
                 tracer.emit("security.llm.response.error", {"file": fp, "response": resp}, level="ERROR", span_id=span_id, parent_span_id=parent_span_id)
                 tracer.emit_metric("security.llm.validation_error.count")
