@@ -14,6 +14,34 @@ from agents.state_types import ReviewStateDict
 from reporting.report_generator import report_generator_agent
 
 
+def _route_from_coordinator(state: ReviewStateDict) -> str:
+    plan = state.get("execution_plan", {})
+    if plan.get("run_quality"):
+        return "quality"
+    if plan.get("run_security"):
+        return "security"
+    if plan.get("run_refactor"):
+        return "refactor"
+    return "report"
+
+
+def _route_after_quality(state: ReviewStateDict) -> str:
+    plan = state.get("execution_plan", {})
+    if plan.get("run_security"):
+        return "security"
+    if plan.get("run_refactor") and state.get("quality_findings"):
+        return "refactor"
+    return "report"
+
+
+def _route_after_security(state: ReviewStateDict) -> str:
+    plan = state.get("execution_plan", {})
+    has_actionable_findings = bool(state.get("quality_findings") or state.get("security_findings"))
+    if plan.get("run_refactor") and has_actionable_findings:
+        return "refactor"
+    return "report"
+
+
 def build_graph() -> StateGraph:
     graph = StateGraph(ReviewStateDict)
     graph.add_node("coordinator", coordinator_agent)
@@ -23,9 +51,26 @@ def build_graph() -> StateGraph:
     graph.add_node("report", report_generator_agent)
 
     graph.set_entry_point("coordinator")
-    graph.add_edge("coordinator", "quality")
-    graph.add_edge("quality", "security")
-    graph.add_edge("security", "refactor")
+    graph.add_conditional_edges(
+        "coordinator",
+        _route_from_coordinator,
+        {
+            "quality": "quality",
+            "security": "security",
+            "refactor": "refactor",
+            "report": "report",
+        },
+    )
+    graph.add_conditional_edges(
+        "quality",
+        _route_after_quality,
+        {"security": "security", "refactor": "refactor", "report": "report"},
+    )
+    graph.add_conditional_edges(
+        "security",
+        _route_after_security,
+        {"refactor": "refactor", "report": "report"},
+    )
     graph.add_edge("refactor", "report")
     graph.add_edge("report", END)
     return graph

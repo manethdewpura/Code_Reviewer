@@ -17,14 +17,23 @@ class FindingDict(TypedDict, total=False):
     evidence: dict[str, Any]
 
 
+class ExecutionPlanDict(TypedDict, total=False):
+    run_quality: bool
+    run_security: bool
+    run_refactor: bool
+
+
 class ReviewStateDict(TypedDict, total=False):
     project_root: str
     model: str
     created_at: str
     run_dir: str
+    run_id: str
+    active_span_id: str
 
     project_files: list[str]
     file_contents: dict[str, str]
+    execution_plan: ExecutionPlanDict
 
     quality_findings: list[FindingDict]
     security_findings: list[FindingDict]
