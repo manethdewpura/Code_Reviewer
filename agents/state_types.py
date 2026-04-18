@@ -30,6 +30,8 @@ class ReviewStateDict(TypedDict, total=False):
     run_dir: str
     run_id: str
     active_span_id: str
+    security_mode: Literal["normal", "escalation"]
+    security_escalation_done: bool
 
     project_files: list[str]
     file_contents: dict[str, str]

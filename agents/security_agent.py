@@ -19,12 +19,28 @@ Constraints:
 
 
 def security_agent(state: ReviewStateDict) -> ReviewStateDict:
-    tracer = JsonlTracer(state["run_dir"], run_id=state.get("run_id"), component="security")
+    mode = state.get("security_mode", "normal")
+    component = "security_escalation" if mode == "escalation" else "security"
+    tracer = JsonlTracer(state["run_dir"], run_id=state.get("run_id"), component=component)
     parent_span_id = state.get("active_span_id")
-    span_id = tracer.start_span("security", parent_span_id=parent_span_id, payload={"files": len(state.get("project_files", []))})
+    span_id = tracer.start_span(
+        "security",
+        parent_span_id=parent_span_id,
+        payload={"files": len(state.get("project_files", [])), "mode": mode},
+    )
 
     model = state["model"]
-    findings: list[FindingDict] = []
+    findings: list[FindingDict] = list(state.get("security_findings", [])) if mode == "escalation" else []
+    seen = {
+        (
+            f.get("file"),
+            f.get("severity"),
+            f.get("title"),
+            f.get("details"),
+            f.get("recommendation"),
+        )
+        for f in findings
+    }
 
     for fp, code in state.get("file_contents", {}).items():
         raw_hits = scan_security_risks(code)
@@ -40,17 +56,19 @@ def security_agent(state: ReviewStateDict) -> ReviewStateDict:
         tracer.emit_metric("tool.scan_security_risks.count")
 
         for h in hits:
-            findings.append(
-                {
-                    "file": fp,
-                    "type": "security",
-                    "severity": h.get("severity", "medium"),
-                    "title": h.get("title", "Security risk"),
-                    "details": f"Matched rule {h.get('rule_id')}.",
-                    "recommendation": _recommendation_for_rule(h.get("rule_id")),
-                    "evidence": h.get("evidence", {}),
-                }
-            )
+            finding: FindingDict = {
+                "file": fp,
+                "type": "security",
+                "severity": h.get("severity", "medium"),
+                "title": h.get("title", "Security risk"),
+                "details": f"Matched rule {h.get('rule_id')}.",
+                "recommendation": _recommendation_for_rule(h.get("rule_id")),
+                "evidence": h.get("evidence", {}),
+            }
+            key = (finding.get("file"), finding.get("severity"), finding.get("title"), finding.get("details"), finding.get("recommendation"))
+            if key not in seen:
+                findings.append(finding)
+                seen.add(key)
 
         # LLM enrichment only if we have hits (keeps runtime bounded)
         if hits:
@@ -76,22 +94,31 @@ def security_agent(state: ReviewStateDict) -> ReviewStateDict:
             tracer.emit("security.llm.response", {"file": fp, "risks": len(valid_resp.risks)}, span_id=span_id, parent_span_id=parent_span_id)
             tracer.emit_metric("security.llm.calls.count")
             for r in valid_resp.risks:
-                findings.append(
-                    {
-                        "file": fp,
-                        "type": "security",
-                        "severity": r.severity,
-                        "title": r.title or "Security improvement",
-                        "details": "LLM refinement based on local scan hits.",
-                        "recommendation": r.mitigation or "",
-                        "evidence": {"source": "llm_enrichment"},
-                    }
-                )
+                finding = {
+                    "file": fp,
+                    "type": "security",
+                    "severity": r.severity,
+                    "title": r.title or "Security improvement",
+                    "details": "LLM refinement based on local scan hits.",
+                    "recommendation": r.mitigation or "",
+                    "evidence": {"source": "llm_enrichment"},
+                }
+                key = (finding.get("file"), finding.get("severity"), finding.get("title"), finding.get("details"), finding.get("recommendation"))
+                if key not in seen:
+                    findings.append(finding)
+                    seen.add(key)
 
     state["security_findings"] = findings
     tracer.emit_metric("security.findings.total", float(len(findings)))
     tracer.end_span("security", span_id=span_id, parent_span_id=parent_span_id, payload={"findings": len(findings)})
     return state
+
+
+def security_escalation_agent(state: ReviewStateDict) -> ReviewStateDict:
+    """Run one additional, explicit escalation pass for critical findings."""
+    state["security_mode"] = "escalation"
+    state["security_escalation_done"] = True
+    return security_agent(state)
 
 
 def _recommendation_for_rule(rule_id: str | None) -> str:
