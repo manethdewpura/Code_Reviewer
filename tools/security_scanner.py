@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
 class SecurityHit:
     rule_id: str
     title: str
-    severity: str
+    severity: Literal["low", "medium", "high", "critical"]
     evidence: dict[str, Any]
 
 
@@ -68,6 +68,9 @@ def scan_security_risks(code: str) -> list[dict[str, Any]]:
     Returns:
         List of hits with rule id, title, severity, and match evidence.
     """
+    if not isinstance(code, str):
+        raise TypeError("scan_security_risks expects `code` to be a string.")
+
     hits: list[dict[str, Any]] = []
     for hit, pat in _RULES:
         for m in pat.finditer(code):
