@@ -4,6 +4,12 @@ from pathlib import Path
 
 from agents.state_types import FindingDict, ReviewStateDict
 from observability.tracer import JsonlTracer
+from schemas.contracts import (
+    ComplexityResultModel,
+    QualityResponseModel,
+    normalize_quality_response,
+    safe_validate,
+)
 from tools.complexity_tool import calculate_complexity
 from tools.ollama_client import ollama_chat_json
 
@@ -26,8 +32,9 @@ def _basic_metrics(code: str) -> dict[str, int]:
 
 
 def code_quality_agent(state: ReviewStateDict) -> ReviewStateDict:
-    tracer = JsonlTracer(state["run_dir"])
-    tracer.emit("quality.start", {"files": len(state.get("project_files", []))})
+    tracer = JsonlTracer(state["run_dir"], run_id=state.get("run_id"), component="quality")
+    parent_span_id = state.get("active_span_id")
+    span_id = tracer.start_span("quality", parent_span_id=parent_span_id, payload={"files": len(state.get("project_files", []))})
 
     model = state["model"]
     findings: list[FindingDict] = []
@@ -53,7 +60,14 @@ def code_quality_agent(state: ReviewStateDict) -> ReviewStateDict:
         # Tool: complexity (Python only)
         if ext == ".py":
             comp = calculate_complexity(code, language="python")
-            tracer.emit("tool.calculate_complexity", {"file": fp, "result": comp})
+            valid_comp = safe_validate(ComplexityResultModel, comp)
+            if not valid_comp:
+                tracer.emit("tool.calculate_complexity.error", {"file": fp, "result": comp}, level="ERROR", span_id=span_id, parent_span_id=parent_span_id)
+                tracer.emit_metric("tool.calculate_complexity.validation_error.count")
+                continue
+            comp = valid_comp.model_dump()
+            tracer.emit("tool.calculate_complexity", {"file": fp, "result": comp}, span_id=span_id, parent_span_id=parent_span_id)
+            tracer.emit_metric("tool.calculate_complexity.count")
 
             if comp.get("supported") and comp.get("cyclomatic_max", 0) >= 15:
                 hotspots = sorted(comp.get("cyclomatic_functions", []), key=lambda x: x.get("complexity", 0), reverse=True)[:3]
@@ -95,21 +109,28 @@ def code_quality_agent(state: ReviewStateDict) -> ReviewStateDict:
                 schema_hint=schema_hint,
                 temperature=0.2,
             )
-            tracer.emit("quality.llm.response", {"file": fp, "response": resp})
-            for issue in (resp.get("issues") or []) if isinstance(resp, dict) else []:
+            normalized_resp = normalize_quality_response(resp)
+            valid_resp = safe_validate(QualityResponseModel, normalized_resp)
+            if not valid_resp:
+                tracer.emit("quality.llm.response.error", {"file": fp, "response": resp}, level="ERROR", span_id=span_id, parent_span_id=parent_span_id)
+                tracer.emit_metric("quality.llm.validation_error.count")
+                continue
+            tracer.emit("quality.llm.response", {"file": fp, "issues": len(valid_resp.issues)}, span_id=span_id, parent_span_id=parent_span_id)
+            tracer.emit_metric("quality.llm.calls.count")
+            for issue in valid_resp.issues:
                 findings.append(
                     {
                         "file": fp,
                         "type": "quality",
-                        "severity": (issue.get("severity") or "low"),
-                        "title": issue.get("title") or "Code quality issue",
-                        "details": issue.get("details") or "",
-                        "recommendation": issue.get("recommendation") or "",
+                        "severity": issue.severity,
+                        "title": issue.title or "Code quality issue",
+                        "details": issue.details or "",
+                        "recommendation": issue.recommendation or "",
                         "evidence": {"source": "llm_enrichment"},
                     }
                 )
 
     state["quality_findings"] = findings
-    tracer.emit("quality.done", {"findings": len(findings)})
+    tracer.emit_metric("quality.findings.total", float(len(findings)))
+    tracer.end_span("quality", span_id=span_id, parent_span_id=parent_span_id, payload={"findings": len(findings)})
     return state
-
