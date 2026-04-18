@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from agents.state_types import FindingDict, ReviewStateDict
 from observability.tracer import JsonlTracer
+from schemas.contracts import (
+    RefactorResponseModel,
+    RefactorSuggestionsModel,
+    normalize_refactor_response,
+    safe_validate,
+)
 from tools.formatter_tool import generate_refactor_suggestions
 from tools.ollama_client import ollama_chat_json
 
@@ -18,10 +24,12 @@ Constraints:
 
 
 def refactor_agent(state: ReviewStateDict) -> ReviewStateDict:
-    tracer = JsonlTracer(state["run_dir"])
-    tracer.emit(
-        "refactor.start",
-        {
+    tracer = JsonlTracer(state["run_dir"], run_id=state.get("run_id"), component="refactor")
+    parent_span_id = state.get("active_span_id")
+    span_id = tracer.start_span(
+        "refactor",
+        parent_span_id=parent_span_id,
+        payload={
             "quality_findings": len(state.get("quality_findings", [])),
             "security_findings": len(state.get("security_findings", [])),
         },
@@ -35,7 +43,15 @@ def refactor_agent(state: ReviewStateDict) -> ReviewStateDict:
         combined.append({"file": f.get("file"), "title": f.get("title"), "recommendation": f.get("recommendation"), "type": "security"})
 
     structured = generate_refactor_suggestions(combined)
-    tracer.emit("tool.generate_refactor_suggestions", {"result": structured.get("summary")})
+    valid_structured = safe_validate(RefactorSuggestionsModel, structured)
+    if not valid_structured:
+        tracer.emit("tool.generate_refactor_suggestions.validation_error", {"result": structured}, level="ERROR", span_id=span_id, parent_span_id=parent_span_id)
+        tracer.emit_metric("tool.generate_refactor_suggestions.validation_error.count")
+        structured = {"files": {}, "summary": {"files_with_suggestions": 0, "suggestion_count": 0}}
+    else:
+        structured = valid_structured.model_dump()
+    tracer.emit("tool.generate_refactor_suggestions", {"result": structured.get("summary")}, span_id=span_id, parent_span_id=parent_span_id)
+    tracer.emit_metric("tool.generate_refactor_suggestions.count")
 
     # LLM: convert grouped issues into a concrete refactor plan
     schema_hint = {
@@ -55,13 +71,21 @@ def refactor_agent(state: ReviewStateDict) -> ReviewStateDict:
         schema_hint=schema_hint,
         temperature=0.2,
     )
-    tracer.emit("refactor.llm.response", {"response": resp})
+    normalized_resp = normalize_refactor_response(resp)
+    valid_resp = safe_validate(RefactorResponseModel, normalized_resp)
+    if not valid_resp:
+        tracer.emit("refactor.llm.response.error", {"response": resp}, level="ERROR", span_id=span_id, parent_span_id=parent_span_id)
+        tracer.emit_metric("refactor.llm.validation_error.count")
+        valid_resp = RefactorResponseModel(plan=[])
+    else:
+        tracer.emit("refactor.llm.response", {"plan_items": len(valid_resp.plan)}, span_id=span_id, parent_span_id=parent_span_id)
+        tracer.emit_metric("refactor.llm.calls.count")
 
     findings: list[FindingDict] = []
-    for item in (resp.get("plan") or []) if isinstance(resp, dict) else []:
-        file = item.get("file") or "unknown"
-        steps = item.get("steps") or []
-        risk = item.get("risk") or "low"
+    for item in valid_resp.plan:
+        file = item.file or "unknown"
+        steps = item.steps or []
+        risk = item.risk or "low"
         findings.append(
             {
                 "file": file,
@@ -75,6 +99,6 @@ def refactor_agent(state: ReviewStateDict) -> ReviewStateDict:
         )
 
     state["refactor_findings"] = findings
-    tracer.emit("refactor.done", {"findings": len(findings)})
+    tracer.emit_metric("refactor.findings.total", float(len(findings)))
+    tracer.end_span("refactor", span_id=span_id, parent_span_id=parent_span_id, payload={"findings": len(findings)})
     return state
-
