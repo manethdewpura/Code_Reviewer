@@ -37,6 +37,20 @@ python main.py --project "C:\\path\\to\\your\\project" --model "llama3.1:8b" --o
 
 You can also run with a smaller model (if available locally), e.g. `phi3`.
 
+## Frontend (Streamlit)
+
+Run a local web UI to analyze a project, inspect findings, and download the generated report:
+
+```bash
+streamlit run frontend/app.py
+```
+
+In the UI:
+- Enter the target project path.
+- Select a local Ollama model.
+- Click **Run Analysis**.
+- View summary + findings and download the JSON report.
+
 ## Tests / Evaluation
 
 ### Deterministic unit + integration tests (default)
