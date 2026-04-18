@@ -77,19 +77,69 @@ def _show_findings(title: str, rows: list[dict[str, Any]]) -> None:
     if not rows:
         st.info("No items.")
         return
-    st.dataframe(
+    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+    table_rows = sorted(
         [
             {
-                "file": r.get("file"),
-                "severity": r.get("severity"),
-                "title": r.get("title"),
-                "recommendation": r.get("recommendation"),
+                "severity": str(r.get("severity", "low")).upper(),
+                "issue": r.get("title"),
+                "file": Path(str(r.get("file", ""))).name,
+                "what_to_do": r.get("recommendation"),
             }
             for r in rows
         ],
-        use_container_width=True,
-        hide_index=True,
+        key=lambda x: severity_rank.get(str(x["severity"]).lower(), 0),
+        reverse=True,
     )
+    st.dataframe(table_rows, use_container_width=True, hide_index=True)
+
+
+def _render_user_friendly_report_preview(report: dict[str, Any]) -> None:
+    st.subheader("Report Preview")
+    summary = report.get("summary", {})
+    by_severity = summary.get("by_severity", {})
+    by_type = summary.get("by_type", {})
+    total = int(summary.get("total_findings", 0))
+
+    critical = int(by_severity.get("critical", 0))
+    high = int(by_severity.get("high", 0))
+    medium = int(by_severity.get("medium", 0))
+    low = int(by_severity.get("low", 0))
+
+    risk_label = "High Risk" if (critical + high) > 0 else "Moderate Risk" if medium > 0 else "Low Risk"
+    risk_emoji = "🔴" if (critical + high) > 0 else "🟠" if medium > 0 else "🟢"
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Overall Risk", f"{risk_emoji} {risk_label}")
+    c2.metric("Total Findings", total)
+    c3.metric("Critical/High", critical + high)
+    c4.metric("Quality/Security/Refactor", f"{by_type.get('quality', 0)}/{by_type.get('security', 0)}/{by_type.get('refactor', 0)}")
+
+    st.markdown("**Priority Actions (Top 3)**")
+    all_items = (
+        report.get("security_findings", [])
+        + report.get("quality_findings", [])
+        + report.get("refactor_suggestions", [])
+    )
+    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+    top_items = sorted(
+        all_items,
+        key=lambda x: severity_rank.get(str(x.get("severity", "low")).lower(), 0),
+        reverse=True,
+    )[:3]
+    if not top_items:
+        st.success("No major issues detected.")
+    else:
+        for i, item in enumerate(top_items, start=1):
+            sev = str(item.get("severity", "low")).upper()
+            file_name = Path(str(item.get("file", ""))).name or "unknown file"
+            st.markdown(f"{i}. **[{sev}]** {item.get('title', 'Issue')} — `{file_name}`")
+            rec = str(item.get("recommendation", "")).strip()
+            if rec:
+                st.caption(rec[:220] + ("..." if len(rec) > 220 else ""))
+
+    with st.expander("Detailed Summary (raw JSON)", expanded=False):
+        st.json(summary)
 
 
 def _show_agent_workflow() -> None:
@@ -466,8 +516,7 @@ if run_button:
                 c2.metric("Total findings", summary.get("total_findings", 0))
                 c3.metric("Model", str(meta.get("model", model)))
 
-                st.subheader("Summary")
-                st.json(summary)
+                _render_user_friendly_report_preview(report)
 
                 _show_findings("Quality Findings", report.get("quality_findings", []))
                 _show_findings("Security Findings", report.get("security_findings", []))
